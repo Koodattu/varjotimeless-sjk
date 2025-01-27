@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Manager Service UI</title>
+    <style>
+      body { font-family: sans-serif; margin: 20px; }
+      #container { max-width: 600px; margin: 0 auto; }
+      .label { font-weight: bold; margin-top: 1em; }
+      .value { margin-bottom: 1em; }
+      .section { padding: 10px; border: 1px solid #ccc; margin-bottom: 10px; }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <h1>AI Manager Service</h1>
+
+      <div class="section">
+        <div class="label">Code Generation In Progress?</div>
+        <div id="inProgress" class="value">Loading...</div>
+      </div>
+
+      <div class="section">
+        <div class="label">Latest Transcription:</div>
+        <div id="transcription" class="value">Loading...</div>
+      </div>
+
+      <div class="section">
+        <div class="label">Latest Requirements (from Context Service):</div>
+        <div id="requirements" class="value">Loading...</div>
+      </div>
+
+      <div class="section">
+        <div class="label">Deployed Application URL:</div>
+        <div id="deployedUrl" class="value">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"
+            integrity="sha384-Ss4M39rG0CMHAcsVr5GzAyl4QrqG2pfXmDYAIWTJP+v0ZWQnEDpFEKJTn28YBh9m"
+            crossorigin="anonymous">
+    </script>
+    <script>
+      var socket = io();
+
+      // When connected, ask server for the current state
+      socket.on('connect', () => {
+        console.log("Connected to manager service");
+        socket.emit('request_state');
+      });
+
+      // Receive updates to the global state
+      socket.on('update_state', (newState) => {
+        console.log("Received state update:", newState);
+        document.getElementById('inProgress').innerText   = newState.code_generation_in_progress ? "YES" : "NO";
+        document.getElementById('transcription').innerText = newState.latest_transcription;
+        document.getElementById('requirements').innerText  = newState.latest_requirements;
+        document.getElementById('deployedUrl').innerText   = newState.deployed_url;
+      });
+    </script>
+  </body>
+</html>

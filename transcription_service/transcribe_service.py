@@ -16,8 +16,8 @@ from urllib.parse import urljoin
 load_dotenv()
 
 # Create the Flask app
-api_v0 = Blueprint('api_v0', __name__)
 app = Flask(__name__)
+api = Blueprint("api", __name__)
 
 SERVICE_PORT = os.getenv("SERVICE_PORT", "8080")
 
@@ -87,8 +87,8 @@ def send_transcription(text: str, meeting_id: int = 0):
                 print(f"Error sending transcription to {endpoint}: {e}")
 
     REST_ENDPOINT_URLS = [
-        urljoin(MEETING_SERVICE_URL, f"/meeting/{meeting_id}/transcription"), 
-        urljoin(MANAGER_SERVICE_URL, "/transcription")
+        urljoin(MEETING_SERVICE_URL, f"meeting/{meeting_id}/transcription"), 
+        urljoin(MANAGER_SERVICE_URL, f"meeting/{meeting_id}/transcription")
     ]
     for endpoint in REST_ENDPOINT_URLS:
         if endpoint:
@@ -137,8 +137,8 @@ def process_audio_segment(frames, meeting_id):
 
 def create_new_meeting():
     try:
-        response = requests.post(MEETING_SERVICE_URL + "/api/v1/meeting")
-        meeting_id = response.json().get("id", 0)
+        response = requests.post(MEETING_SERVICE_URL + "/meeting")
+        meeting_id = response.json().get("meeting_id", 0)
         return str(meeting_id)
     except Exception as e:
         print("Error creating new meeting:", e)
@@ -174,12 +174,19 @@ def listen_loop():
         audio_interface.terminate()
 
 # REST endpoint to receive text from other services
-@api_v0.route('/receive-text', methods=['POST'])
+@api.route('/receive-text', methods=['POST'])
 def receive_text():
     data = request.get_json(force=True)
     text = data.get("text", "")
     print("Received text via REST API:", text)
     return jsonify({"status": "success", "message": "Text received"}), 200
+
+@api.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
 
 if __name__ == "__main__":
     # Start the listen loop in a separate daemon thread
@@ -187,5 +194,5 @@ if __name__ == "__main__":
     listener_thread.start()
 
     # Start the Flask app
-    app.register_blueprint(api_v0)
+    app.register_blueprint(api, url_prefix="/api/v0")
     app.run(host="0.0.0.0", port=SERVICE_PORT)

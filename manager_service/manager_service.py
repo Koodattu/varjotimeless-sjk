@@ -10,8 +10,8 @@ from enum import Enum
 from dotenv import load_dotenv
 load_dotenv()
 
-api_v0 = Blueprint('api_v0', __name__)
 app = Flask(__name__)
+api = Blueprint("api", __name__)
 
 class DiscussionState(Enum):
     CONCEPTUALIZATION = "Conceptualization"
@@ -27,6 +27,7 @@ transcriptions = []             # List of received transcription messages
 requirements = ""               # List of software requirements
 notebook_summary = ""           # Summary of the discussion (the “notebook”)
 code_generation_running = False  # Flag to indicate if a code generation job is running
+deployment_url = ""             # URL where the generated code will be deployed
 
 # Environment configuration for LLM providers and service URLs
 SERVICE_PORT = os.environ.get("SERVICE_PORT", 8082)
@@ -40,7 +41,6 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL")
 VOICE_SERVICE_URL = os.environ.get("VOICE_SERVICE_URL")
 MEETING_SERVICE_URL = os.environ.get("MEETING_SERVICE_URL")  # Assuming this provides the list of requirements
 CODE_GENERATION_SERVICE_URL = os.environ.get("CODE_GENERATION_SERVICE_URL")
-FRONTEND_URL = os.environ.get("FRONTEND_URL")
 
 # Choose the model based on the provider, OpenAI, OpenRouter, or OLLAMA
 CHOSEN_MODEL = OPENAI_MODEL if LLM_PROVIDER.lower() == "openai" else OPENROUTER_MODEL if LLM_PROVIDER.lower() == "openrouter" else OLLAMA_MODEL
@@ -133,13 +133,13 @@ def update_notebook_summary(current_notebook, transcriptions):
         print("Error in update_notebook_summary:", e)
         return current_notebook
 
-def get_requirements():
+def get_requirements(meeting_id):
     """
     Retrieve the list of requirements from the Meeting Service (or other service).
     Expects a JSON response with a "requirements" field.
     """
     try:
-        full_url = urljoin(MEETING_SERVICE_URL, "/api/v0/requirements")
+        full_url = urljoin(MEETING_SERVICE_URL, f"meeting/{meeting_id}/requirements")
         response = requests.get(full_url)
         if response.status_code == 200:
             data = response.json()
@@ -166,7 +166,9 @@ def evaluate_and_maybe_update_state(current_state, requirements, notebook, trans
         '''
         You are a strategic meeting assistant for a software development meeting.
         The current discussion state can only be one of the following: Conceptualization -> Requirement Analysis -> Design (Tech & UI/UX) -> Implementation -> Testing -> Deployment and Maintenance.
+        The discussion should be moving through these states in the aforementioned order.
         Based on the provided context, determine whether to update the state (choose one of these values) and whether to trigger code generation.
+        If the users demand for code generation, you should trigger the code generation service.
         Respond with a valid JSON object containing an 'updated_state' key (with one of the allowed enum values (it can be the same if no change is needed)) and a boolean 'generate_code' flag, along with brief feedback.
         '''
     )
@@ -197,18 +199,15 @@ def evaluate_and_maybe_update_state(current_state, requirements, notebook, trans
         print("Error in evaluate_and_maybe_update_state:", e)
         return current_state, False, ""
 
-def trigger_code_generation(current_state, requirements, notebook, transcription):
+def trigger_code_generation(requirements):
     """
     Call the external code generation service. This call is expected to have a very long timeout.
     """
     payload = {
-        "state": current_state,
         "requirements": requirements,
-        "notebook": notebook,
-        "latest_transcription": transcription
     }
     try:
-        full_url = urljoin(CODE_GENERATION_SERVICE_URL, "/api/v0/generate")
+        full_url = urljoin(CODE_GENERATION_SERVICE_URL, "generate")
         response = requests.post(full_url, json=payload, timeout=36000)
         if response.status_code == 200:
             print("Code generation triggered successfully.")
@@ -224,8 +223,8 @@ def trigger_code_generation(current_state, requirements, notebook, transcription
 # Flask Endpoints
 # -----------------------------------------------------------------------------
 
-@api_v0.route("/transcription", methods=["POST"])
-def receive_transcription():
+@api.route("/meeting/<meeting_id>/transcription", methods=["POST"])
+def receive_transcription(meeting_id):
     """
     Endpoint to receive a new transcription.
     1. Stores the transcription.
@@ -233,7 +232,7 @@ def receive_transcription():
     3. If more than 5 transcriptions exist, updates the notebook summary.
     4. If immediate action is requested, evaluates whether to update state and/or trigger code generation.
     """
-    global transcriptions, notebook_summary, current_state, code_generation_running, requirements
+    global transcriptions, notebook_summary, current_state, code_generation_running, requirements, deployment_url
 
     data = request.get_json()
     transcription = data.get("transcription", "").strip()
@@ -257,7 +256,7 @@ def receive_transcription():
         return jsonify({"status": "OK", "message": "Transcription stored, no further action."}), 200
 
     # Immediate action is needed: retrieve requirements from the meeting service
-    requirements = get_requirements()
+    requirements = get_requirements(meeting_id)
 
     # Evaluate current state and whether to trigger code generation
     new_state, generate_code, feedback = evaluate_and_maybe_update_state(current_state, requirements, notebook_summary, transcription)
@@ -274,7 +273,8 @@ def receive_transcription():
     if generate_code:
         if not code_generation_running:
             code_generation_running = True
-            result = trigger_code_generation(current_state, requirements, notebook_summary, transcription)
+            result = trigger_code_generation(requirements)
+            deployment_url = result.get("deployment_url", "")
             code_generation_running = False
             return jsonify({"status": "OK", "message": "Code generation triggered.", "result": result}), 200
         else:
@@ -282,22 +282,23 @@ def receive_transcription():
 
     return jsonify({"status": "OK", "message": "Transcription processed."}), 200
 
-@api_v0.route("/sse", methods=["GET"])
+@api.route("/sse", methods=["GET"])
 def sse_stream():
     def event_stream():
         while True:
             data = { 
                 "transcriptions": transcriptions, 
                 "notebook_summary": notebook_summary, 
-                "current_state": current_state,
+                "current_state": current_state.value,
                 "code_generation_running": code_generation_running,
-                "requirements": requirements
+                "requirements": requirements,
+                "deployment_url": deployment_url,
             }
             yield f"data: {json.dumps(data)}\n\n"
             time.sleep(1)
     return Response(event_stream(), mimetype="text/event-stream")
 
-@api_v0.after_request
+@api.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
@@ -305,6 +306,5 @@ def add_cors_headers(response):
     return response
 
 if __name__ == "__main__":
-    # Run the server on all interfaces at port 6000 with debugging enabled.
-    app.register_blueprint(api_v0)
+    app.register_blueprint(api, url_prefix="/api/v0")
     app.run(host="0.0.0.0", port=SERVICE_PORT, debug=True)

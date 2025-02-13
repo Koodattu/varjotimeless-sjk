@@ -8,16 +8,20 @@ import tempfile
 import requests
 import pyaudio
 import webrtcvad
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Blueprint
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 # Load configuration from .env
 load_dotenv()
+SERVICE_PORT = os.getenv("SERVICE_PORT", "8080")
+
 TRANSCRIPTION_METHOD = os.getenv("TRANSCRIPTION_METHOD", "local")  # "local" or "rest"
 TASK = os.getenv("TASK", "transcribe")  # "transcribe" or "translate"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # Two REST endpoint URLs to send transcriptions (comma-separated in .env)
-REST_ENDPOINT_URLS = os.getenv("REST_ENDPOINT_URLS", "").split(",")
+MEETING_SERVICE_URL = os.getenv("MEETING_SERVICE_URL", "")
+MANAGER_SERVICE_URL = os.getenv("MANAGER_SERVICE_URL", "")
 
 # For local transcription using faster-whisper
 if TRANSCRIPTION_METHOD == "local":
@@ -69,7 +73,7 @@ def get_wav_bytes(frames) -> bytes:
     buf.seek(0)
     return buf.read()
 
-def send_transcription(text: str):
+def send_transcription(text: str, meeting_id: int = 0):
     def send_request(endpoint):
         try:
             requests.post(endpoint, json={"transcription": text})
@@ -77,11 +81,15 @@ def send_transcription(text: str):
             if "Failed to establish a new connection" not in str(e):
                 print(f"Error sending transcription to {endpoint}: {e}")
 
+    REST_ENDPOINT_URLS = [
+        urlparse(MEETING_SERVICE_URL, "/api/v1/meeting/", meeting_id, "/transcription"), 
+        urlparse(MANAGER_SERVICE_URL, "/transcription")
+    ]
     for endpoint in REST_ENDPOINT_URLS:
         if endpoint.strip():
             threading.Thread(target=send_request, args=(endpoint.strip(),), daemon=True).start()
 
-def process_audio_segment(frames):
+def process_audio_segment(frames, meeting_id):
     print("Processing audio segment...")
     transcription = ""
     if TRANSCRIPTION_METHOD == "local":
@@ -118,16 +126,27 @@ def process_audio_segment(frames):
 
     if transcription:
         print("Transcription:", transcription)
-        send_transcription(transcription)
+        send_transcription(transcription, meeting_id)
     else:
         print("No transcription produced.")
+
+def create_new_meeting():
+    try:
+        response = requests.post(MEETING_SERVICE_URL + "/api/v1/meeting")
+        meeting_id = response.json().get("id", 0)
+        return str(meeting_id)
+    except Exception as e:
+        print("Error creating new meeting:", e)
+        return "0"
 
 def listen_loop():
     frames = []
     last_speech_time = None
 
-    print("Listening on device index", AUDIO_DEVICE_INDEX)
     try:
+        meeting_id = create_new_meeting()
+        print("New meeting ID:", meeting_id)
+        print("Listening on device index", AUDIO_DEVICE_INDEX)
         while True:
             frame = stream.read(FRAME_SIZE, exception_on_overflow=False)
             if is_speech(frame):
@@ -139,7 +158,7 @@ def listen_loop():
                 # If sufficient silence is detected after speech, process the segment
                 if last_speech_time and (time.time() - last_speech_time) > SILENCE_DURATION and frames:
                     segment_frames = frames.copy()
-                    threading.Thread(target=process_audio_segment, args=(segment_frames,), daemon=True).start()
+                    threading.Thread(target=process_audio_segment, args=(segment_frames,meeting_id), daemon=True).start()
                     frames = []
                     last_speech_time = None
     except KeyboardInterrupt:
@@ -150,10 +169,12 @@ def listen_loop():
         audio_interface.terminate()
 
 # Create the Flask app
+api_v0 = Blueprint('api_v0', __name__)
 app = Flask(__name__)
+app.register_blueprint(api_v0)
 
 # REST endpoint to receive text from other services
-@app.route('/receive-text', methods=['POST'])
+@api_v0.route('/receive-text', methods=['POST'])
 def receive_text():
     data = request.get_json(force=True)
     text = data.get("text", "")
@@ -166,4 +187,4 @@ if __name__ == "__main__":
     listener_thread.start()
 
     # Start the Flask app
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=SERVICE_PORT)

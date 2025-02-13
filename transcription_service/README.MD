@@ -1,3 +1,4 @@
+# Transcription Service
 python -m venv venv
 ./venv/scripts/activate
 pip install requests
@@ -7,11 +8,11 @@ pip install sounddevice
 pip install webrtcvad
 pip install python-dotenv
 
-# If using openai whisper service
+### If using openai whisper service
 
 pip install openai
 
-# If running whisper locally
+### If running whisper locally
 
 pip install faster-whisper
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118

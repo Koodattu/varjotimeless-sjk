@@ -13,11 +13,12 @@ from dotenv import load_dotenv
 # Load configuration from .env
 load_dotenv()
 TRANSCRIPTION_METHOD = os.getenv("TRANSCRIPTION_METHOD", "local")  # "local" or "rest"
+TASK = os.getenv("TASK", "transcribe")  # "transcribe" or "translate"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# Two REST endpoint URLs to send transcriptions (comma-separated in .env, for example)
+# Two REST endpoint URLs to send transcriptions (comma-separated in .env)
 REST_ENDPOINT_URLS = os.getenv("REST_ENDPOINT_URLS", "").split(",")
 
-# For local transcription (faster-whisper)
+# For local transcription using faster-whisper
 if TRANSCRIPTION_METHOD == "local":
     from faster_whisper import WhisperModel
     LOCAL_MODEL_SIZE = os.getenv("LOCAL_MODEL_SIZE", "large-v3-turbo")
@@ -31,13 +32,13 @@ else:
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
-FRAME_DURATION = 30  # in ms (10, 20 or 30 ms are acceptable by webrtcvad)
+FRAME_DURATION = 30  # in ms (acceptable: 10, 20, or 30 ms)
 FRAME_SIZE = int(RATE * FRAME_DURATION / 1000)  # number of samples per frame
 SILENCE_DURATION = 1.5  # seconds of silence to mark end of speech segment
 
-vad = webrtcvad.Vad(2)  # set aggressiveness between 0 (least) to 3 (most)
+vad = webrtcvad.Vad(2)  # set aggressiveness from 0 (least) to 3 (most)
 
-# Setup PyAudio to capture audio from the desired device (select device index via .env if needed)
+# Setup PyAudio to capture audio from the desired device (device index specified via .env)
 AUDIO_DEVICE_INDEX = int(os.getenv("AUDIO_DEVICE_INDEX", "0"))
 audio_interface = pyaudio.PyAudio()
 stream = audio_interface.open(format=FORMAT,
@@ -58,7 +59,6 @@ def save_frames_to_wav(frames, file_path):
         wf.writeframes(b"".join(frames))
 
 def get_wav_bytes(frames) -> bytes:
-    # Write WAV data into an in-memory buffer and return bytes
     buf = io.BytesIO()
     with wave.open(buf, 'wb') as wf:
         wf.setnchannels(CHANNELS)
@@ -83,29 +83,34 @@ def process_audio_segment(frames):
     print("Processing audio segment...")
     transcription = ""
     if TRANSCRIPTION_METHOD == "local":
-        # For faster-whisper, we need a file path. Write to a temporary WAV file.
+        # Write to a temporary WAV file for faster-whisper
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
             temp_filename = tmp_file.name
         try:
             save_frames_to_wav(frames, temp_filename)
-            # Choose task "transcribe" or "translate" based on configuration (here we assume transcription)
-            segments, _ = local_model.transcribe(temp_filename, task="translate", beam_size=5, temperature=0.0)
+            # Use the TASK parameter ("transcribe" or "translate")
+            segments, _ = local_model.transcribe(temp_filename, task=TASK, beam_size=5, temperature=0.0)
             transcription = " ".join(seg.text for seg in segments).strip()
         except Exception as e:
             print(f"Local transcription error: {e}")
         finally:
             os.remove(temp_filename)
     else:
-        # For REST API: prepare an in-memory BytesIO object.
+        # REST API: prepare an in-memory WAV buffer.
         try:
             wav_bytes = get_wav_bytes(frames)
             audio_buffer = io.BytesIO(wav_bytes)
-            # The API expects the file-like object to have a .name attribute with a proper extension.
+            # Set the .name attribute so the API infers the file type
             audio_buffer.name = "audio.wav"
             from openai import OpenAI
             openai_client = OpenAI(OPENAI_API_KEY)
-            # Using OpenAI's REST API for Whisper
-            response = openai_client.audio.translations.create("whisper-1", audio_buffer)
+            # Using OpenAI's REST API for Whisper with correct usage
+            if TASK == "transcribe":
+                response = openai_client.audio.transcriptions.create("whisper-1", audio_buffer)
+            elif TASK == "translate":
+                response = openai_client.audio.translations.create("whisper-1", audio_buffer)
+            else:
+                response = {}
             transcription = response.get("text", "").strip() if isinstance(response, dict) else ""
         except Exception as e:
             print(f"REST transcription error: {e}")
@@ -130,12 +135,10 @@ def listen_loop():
                 last_speech_time = time.time()
                 frames.append(frame)
             else:
-                # No speech detected in this frame
+                # If sufficient silence is detected after speech, process the segment
                 if last_speech_time and (time.time() - last_speech_time) > SILENCE_DURATION and frames:
-                    # Enough silence detected; process the collected frames in a separate thread
                     segment_frames = frames.copy()
                     threading.Thread(target=process_audio_segment, args=(segment_frames,), daemon=True).start()
-                    # Reset for next segment
                     frames = []
                     last_speech_time = None
     except KeyboardInterrupt:

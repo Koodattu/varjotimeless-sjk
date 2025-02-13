@@ -4,3 +4,4 @@ python -m venv venv
 pip install requests
 pip install flask
 pip install openai
+pip install python-dotenv

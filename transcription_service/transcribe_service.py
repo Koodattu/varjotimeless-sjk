@@ -10,10 +10,15 @@ import pyaudio
 import webrtcvad
 from flask import Flask, request, jsonify, Blueprint
 from dotenv import load_dotenv
-from urllib.parse import urlparse
+from urllib.parse import urljoin
 
 # Load configuration from .env
 load_dotenv()
+
+# Create the Flask app
+api_v0 = Blueprint('api_v0', __name__)
+app = Flask(__name__)
+
 SERVICE_PORT = os.getenv("SERVICE_PORT", "8080")
 
 TRANSCRIPTION_METHOD = os.getenv("TRANSCRIPTION_METHOD", "local")  # "local" or "rest"
@@ -82,12 +87,12 @@ def send_transcription(text: str, meeting_id: int = 0):
                 print(f"Error sending transcription to {endpoint}: {e}")
 
     REST_ENDPOINT_URLS = [
-        urlparse(MEETING_SERVICE_URL, "/api/v1/meeting/", meeting_id, "/transcription"), 
-        urlparse(MANAGER_SERVICE_URL, "/transcription")
+        urljoin(MEETING_SERVICE_URL, f"/meeting/{meeting_id}/transcription"), 
+        urljoin(MANAGER_SERVICE_URL, "/transcription")
     ]
     for endpoint in REST_ENDPOINT_URLS:
-        if endpoint.strip():
-            threading.Thread(target=send_request, args=(endpoint.strip(),), daemon=True).start()
+        if endpoint:
+            threading.Thread(target=send_request, args=(endpoint,), daemon=True).start()
 
 def process_audio_segment(frames, meeting_id):
     print("Processing audio segment...")
@@ -168,11 +173,6 @@ def listen_loop():
         stream.close()
         audio_interface.terminate()
 
-# Create the Flask app
-api_v0 = Blueprint('api_v0', __name__)
-app = Flask(__name__)
-app.register_blueprint(api_v0)
-
 # REST endpoint to receive text from other services
 @api_v0.route('/receive-text', methods=['POST'])
 def receive_text():
@@ -187,4 +187,5 @@ if __name__ == "__main__":
     listener_thread.start()
 
     # Start the Flask app
+    app.register_blueprint(api_v0)
     app.run(host="0.0.0.0", port=SERVICE_PORT)

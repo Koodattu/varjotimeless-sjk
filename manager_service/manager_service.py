@@ -7,10 +7,11 @@ from flask import Flask, request, jsonify, Blueprint, Response
 from pydantic import BaseModel
 from urllib.parse import urljoin
 from enum import Enum
+from dotenv import load_dotenv
+load_dotenv()
 
 api_v0 = Blueprint('api_v0', __name__)
 app = Flask(__name__)
-app.register_blueprint(api_v0)
 
 class DiscussionState(Enum):
     CONCEPTUALIZATION = "Conceptualization"
@@ -41,31 +42,24 @@ MEETING_SERVICE_URL = os.environ.get("MEETING_SERVICE_URL")  # Assuming this pro
 CODE_GENERATION_SERVICE_URL = os.environ.get("CODE_GENERATION_SERVICE_URL")
 FRONTEND_URL = os.environ.get("FRONTEND_URL")
 
-CHOSEN_MODEL = ""
+# Choose the model based on the provider, OpenAI, OpenRouter, or OLLAMA
+CHOSEN_MODEL = OPENAI_MODEL if LLM_PROVIDER.lower() == "openai" else OPENROUTER_MODEL if LLM_PROVIDER.lower() == "openrouter" else OLLAMA_MODEL
 
 # Setup LLM client based on provider choice.
 def get_llm_client():
     if LLM_PROVIDER.lower() == "openrouter":
-        # Using OpenRouter via OpenAI SDK wrapper example.
-        global CHOSEN_MODEL
-        CHOSEN_MODEL = OPENROUTER_MODEL
         return OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY,
         )
     elif LLM_PROVIDER.lower() == "openai":
-        global CHOSEN_MODEL
-        CHOSEN_MODEL = OPENAI_MODEL
         return OpenAI(
             api_key=OPENAI_API_KEY,
         )
     elif LLM_PROVIDER.lower() == "ollama":
-        global CHOSEN_MODEL
-        CHOSEN_MODEL = OLLAMA_MODEL
         return OpenAI(
             base_url=OLLAMA_URL,
             api_key="ollama",  # Required but unused
-            model=OLLAMA_MODEL,
         )
     else:
         raise ValueError("Unsupported LLM Provider")
@@ -171,7 +165,7 @@ def evaluate_and_maybe_update_state(current_state, requirements, notebook, trans
     system_prompt = (
         '''
         You are a strategic meeting assistant for a software development meeting.
-        The current discussion state can only be one of the following: Conceptualization, Requirement Analysis, Design (Tech & UI/UX), Implementation, Testing, or Deployment and Maintenance.
+        The current discussion state can only be one of the following: Conceptualization -> Requirement Analysis -> Design (Tech & UI/UX) -> Implementation -> Testing -> Deployment and Maintenance.
         Based on the provided context, determine whether to update the state (choose one of these values) and whether to trigger code generation.
         Respond with a valid JSON object containing an 'updated_state' key (with one of the allowed enum values (it can be the same if no change is needed)) and a boolean 'generate_code' flag, along with brief feedback.
         '''
@@ -312,4 +306,5 @@ def add_cors_headers(response):
 
 if __name__ == "__main__":
     # Run the server on all interfaces at port 6000 with debugging enabled.
+    app.register_blueprint(api_v0)
     app.run(host="0.0.0.0", port=SERVICE_PORT, debug=True)

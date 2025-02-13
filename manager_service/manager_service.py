@@ -4,6 +4,7 @@ import json
 import requests
 from openai import OpenAI
 from flask import Flask, request, jsonify, Blueprint, Response
+from flask_cors import CORS
 from pydantic import BaseModel
 from urllib.parse import urljoin
 from enum import Enum
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
 api = Blueprint("api", __name__)
 
 class DiscussionState(Enum):
@@ -297,13 +299,6 @@ def sse_stream():
             yield f"data: {json.dumps(data)}\n\n"
             time.sleep(1)
     return Response(event_stream(), mimetype="text/event-stream")
-
-@api.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    return response
 
 if __name__ == "__main__":
     app.register_blueprint(api, url_prefix="/api/v0")

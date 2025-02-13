@@ -1,20 +1,30 @@
 import os
+import time
 import json
 import requests
 from openai import OpenAI
-from flask import Flask, request, jsonify, Blueprint
+from flask import Flask, request, jsonify, Blueprint, Response
 from pydantic import BaseModel
 from urllib.parse import urljoin
+from enum import Enum
 
 api_v0 = Blueprint('api_v0', __name__)
 app = Flask(__name__)
 app.register_blueprint(api_v0)
 
+class DiscussionState(Enum):
+    CONCEPTUALIZATION = "Conceptualization"
+    REQUIREMENT_ANALYSIS = "Requirement Analysis"
+    DESIGN = "Design (Tech & UI/UX)"
+    IMPLEMENTATION = "Implementation"
+    TESTING = "Testing"
+    DEPLOYMENT_MAINTENANCE = "Deployment and Maintenance"
+
 # Global in-memory state
+current_state = DiscussionState.CONCEPTUALIZATION.value
 transcriptions = []             # List of received transcription messages
+requirements = ""               # List of software requirements
 notebook_summary = ""           # Summary of the discussion (the “notebook”)
-current_state = "Conceptualization"  # Discussion state; possible states: 
-                                    # Conceptualization > Requirement Analysis > Design (Tech & UI/UX) > Implementation > Testing > Deployment and Maintenance
 code_generation_running = False  # Flag to indicate if a code generation job is running
 
 # Environment configuration for LLM providers and service URLs
@@ -150,7 +160,7 @@ def get_requirements():
         return ""
 
 class EvaluatedState(BaseModel):
-    updated_state: str
+    updated_state: DiscussionState
     generate_code: bool
     feedback: str
 
@@ -159,11 +169,12 @@ def evaluate_and_maybe_update_state(current_state, requirements, notebook, trans
     Poll the LLM with the current state, requirements, notebook summary, and latest transcription.
     """
     system_prompt = (
-        "You are a strategic meeting assistant for a software development meeting. "
-        "Analyze the current meeting context to decide whether the discussion state should be updated or if code generation should be initiated. "
-        "You will be provided with the current discussion state, a list of software requirements, a summary of previous discussions (notebook), "
-        "and the latest transcription snippet. Return your decision as a valid JSON object containing the key 'updated_state' (with the new state or 'same' if no change) "
-        "and a boolean 'generate_code' flag. Also include brief feedback summarizing your reasoning."
+        '''
+        You are a strategic meeting assistant for a software development meeting.
+        The current discussion state can only be one of the following: Conceptualization, Requirement Analysis, Design (Tech & UI/UX), Implementation, Testing, or Deployment and Maintenance.
+        Based on the provided context, determine whether to update the state (choose one of these values) and whether to trigger code generation.
+        Respond with a valid JSON object containing an 'updated_state' key (with one of the allowed enum values (it can be the same if no change is needed)) and a boolean 'generate_code' flag, along with brief feedback.
+        '''
     )
     user_prompt = (
         f"Current state: '{current_state}'\n"
@@ -184,11 +195,13 @@ def evaluate_and_maybe_update_state(current_state, requirements, notebook, trans
         )
         result = response.choices[0].message.parsed
         print(f"State evaluation LLM response: {result}")
-        decision = json.loads(result)
-        return decision
+        updated_state = result.updated_state
+        generate_code = result.generate_code
+        feedback = result.feedback
+        return updated_state, generate_code, feedback
     except Exception as e:
         print("Error in evaluate_and_maybe_update_state:", e)
-        return {"update_state": current_state, "generate_code": False}
+        return current_state, False, ""
 
 def trigger_code_generation(current_state, requirements, notebook, transcription):
     """
@@ -226,7 +239,7 @@ def receive_transcription():
     3. If more than 5 transcriptions exist, updates the notebook summary.
     4. If immediate action is requested, evaluates whether to update state and/or trigger code generation.
     """
-    global transcriptions, notebook_summary, current_state, code_generation_running
+    global transcriptions, notebook_summary, current_state, code_generation_running, requirements
 
     data = request.get_json()
     transcription = data.get("transcription", "").strip()
@@ -241,9 +254,9 @@ def receive_transcription():
     immediate_action = poll_immediate_action(transcription)
 
     # Update notebook summary if we have more than 5 transcriptions
-    if len(transcriptions) > 5:
+    if len(transcriptions) % 5 == 0:
         notebook_summary = update_notebook_summary(notebook_summary, transcriptions)
-        transcriptions = [] # Clear the list after updating the summary 
+        transcriptions = transcriptions[-5:]  # Keep only the last 5 transcriptions
 
     # If no immediate action, simply store the transcription and return
     if not immediate_action:
@@ -253,9 +266,10 @@ def receive_transcription():
     requirements = get_requirements()
 
     # Evaluate current state and whether to trigger code generation
-    decision = evaluate_and_maybe_update_state(current_state, requirements, notebook_summary, transcription)
-    new_state = decision.get("update_state", current_state)
-    generate_code = decision.get("generate_code", False)
+    new_state, generate_code, feedback = evaluate_and_maybe_update_state(current_state, requirements, notebook_summary, transcription)
+
+    # Print feedback from the LLM
+    print(f"LLM feedback: {feedback}")
 
     # Update state if needed
     if new_state != current_state:
@@ -274,16 +288,27 @@ def receive_transcription():
 
     return jsonify({"status": "OK", "message": "Transcription processed."}), 200
 
-@api_v0.route("/transcription", methods=["GET"])
-def get_transcriptions():
-    """
-    Optional endpoint to view the current list of transcriptions, notebook summary, and current state.
-    """
-    return jsonify({
-        "transcriptions": transcriptions,
-        "notebook_summary": notebook_summary,
-        "current_state": current_state
-    }), 200
+@api_v0.route("/sse", methods=["GET"])
+def sse_stream():
+    def event_stream():
+        while True:
+            data = { 
+                "transcriptions": transcriptions, 
+                "notebook_summary": notebook_summary, 
+                "current_state": current_state,
+                "code_generation_running": code_generation_running,
+                "requirements": requirements
+            }
+            yield f"data: {json.dumps(data)}\n\n"
+            time.sleep(1)
+    return Response(event_stream(), mimetype="text/event-stream")
+
+@api_v0.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
 
 if __name__ == "__main__":
     # Run the server on all interfaces at port 6000 with debugging enabled.

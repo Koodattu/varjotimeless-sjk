@@ -10,7 +10,7 @@ def receive_transcription():
     global transcription_store
     data = request.get_json()
     # Expecting JSON payload: { "text": "the transcribed text..." }
-    new_text = data.get("text", "").strip()
+    new_text = data.get("transcription", "").strip()
     if new_text:
         transcription_store += new_text + " "
         print(f"Updated transcription store: {transcription_store}")
@@ -25,4 +25,4 @@ def get_transcription():
 
 if __name__ == "__main__":
     # Run the server on all interfaces at port 5000
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=6000, debug=True)

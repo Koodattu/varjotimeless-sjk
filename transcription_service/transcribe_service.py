@@ -74,7 +74,8 @@ def send_transcription(text: str):
         try:
             requests.post(endpoint, json={"transcription": text})
         except Exception as e:
-            print(f"Error sending transcription to {endpoint}: {e}")
+            if "Failed to establish a new connection" not in str(e):
+                print(f"Error sending transcription to {endpoint}: {e}")
 
     for endpoint in REST_ENDPOINT_URLS:
         if endpoint.strip():
@@ -97,22 +98,21 @@ def process_audio_segment(frames):
         finally:
             os.remove(temp_filename)
     else:
-        # REST API: prepare an in-memory WAV buffer.
         try:
             wav_bytes = get_wav_bytes(frames)
             audio_buffer = io.BytesIO(wav_bytes)
             # Set the .name attribute so the API infers the file type
             audio_buffer.name = "audio.wav"
             from openai import OpenAI
-            openai_client = OpenAI(OPENAI_API_KEY)
+            openai_client = OpenAI(api_key=OPENAI_API_KEY)
             # Using OpenAI's REST API for Whisper with correct usage
             if TASK == "transcribe":
-                response = openai_client.audio.transcriptions.create("whisper-1", audio_buffer)
+                response = openai_client.audio.transcriptions.create(model="whisper-1", file=audio_buffer)
             elif TASK == "translate":
-                response = openai_client.audio.translations.create("whisper-1", audio_buffer)
+                response = openai_client.audio.translations.create(model="whisper-1", file=audio_buffer)
             else:
                 response = {}
-            transcription = response.get("text", "").strip() if isinstance(response, dict) else ""
+            transcription = response.text.strip()
         except Exception as e:
             print(f"REST transcription error: {e}")
 

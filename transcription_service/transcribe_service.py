@@ -8,6 +8,7 @@ import tempfile
 import requests
 import pyaudio
 import webrtcvad
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 # Load configuration from .env
@@ -148,5 +149,21 @@ def listen_loop():
         stream.close()
         audio_interface.terminate()
 
+# Create the Flask app
+app = Flask(__name__)
+
+# REST endpoint to receive text from other services
+@app.route('/receive-text', methods=['POST'])
+def receive_text():
+    data = request.get_json(force=True)
+    text = data.get("text", "")
+    print("Received text via REST API:", text)
+    return jsonify({"status": "success", "message": "Text received"}), 200
+
 if __name__ == "__main__":
-    listen_loop()
+    # Start the listen loop in a separate daemon thread
+    listener_thread = threading.Thread(target=listen_loop, daemon=True)
+    listener_thread.start()
+
+    # Start the Flask app
+    app.run(host="0.0.0.0", port=5000)

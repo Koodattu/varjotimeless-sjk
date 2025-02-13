@@ -74,14 +74,15 @@ def poll_immediate_action(transcription):
     Poll the LLM to decide if immediate action is needed based on the latest transcription.
     The prompt asks for a True/False answer.
     """
-    prompt = (
-        f"Given the latest user transcription in the user message.\n"
-        "Should we perform any immediate action? Respond with True or False only.\n"
-        "Respond in valid JSON only."
+    system_prompt = (
+        "You are a meeting assistant for a software development meeting focused on creating new software. "
+        "Analyze the provided transcription snippet and determine if the content indicates that an immediate action is required. "
+        "Return your answer as a valid JSON with a single field 'take_action' set to true or false. Do not include any extra commentary."
     )
+    user_prompt = f"Transcription snippet: '{transcription}'"
     messages = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": transcription}
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
     ]
     try:
         response = llm_client.beta.chat.completions.parse(
@@ -102,14 +103,18 @@ def update_notebook_summary(current_notebook, transcriptions):
     Poll the LLM to update the notebook summary with the latest transcription.
     The prompt includes the current summary and the new transcription.
     """
-    prompt = (
-        f"Current notebook summary: '{current_notebook}'.\n"
-        "Update the notebook summary to concisely reflect what has been discussed so far."
-        "The new transcriptions are as follows:"
+    system_prompt = (
+        "You are a summarization assistant for a software development meeting about creating new software. "
+        "Your task is to update the current notebook summary to concisely capture all discussion points, decisions, and evolving requirements. "
+        "Focus on clarity and brevity in your summary."
+    )
+    user_prompt = (
+        f"Current notebook summary: '{current_notebook}'\n"
+        "New transcriptions:\n" + "\n".join(transcriptions)
     )
     messages = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": ("\n").join(transcriptions) }
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
     ]
     try:
         response = llm_client.chat.completions.create(
@@ -153,17 +158,22 @@ def evaluate_and_maybe_update_state(current_state, requirements, notebook, trans
     """
     Poll the LLM with the current state, requirements, notebook summary, and latest transcription.
     """
-    prompt = (
-        f"Current discussion state: '{current_state}'.\n"
-        f"Requirements: '{requirements}'.\n"
-        f"Notebook summary: '{notebook}'.\n"
-        "Based on the above, should we update the discussion state and/or trigger code generation? "
-        "Respond with a valid JSON in the following format: "
-        '{"update_state": "<new_state or same>", "generate_code": <true/false>}.'
+    system_prompt = (
+        "You are a strategic meeting assistant for a software development meeting. "
+        "Analyze the current meeting context to decide whether the discussion state should be updated or if code generation should be initiated. "
+        "You will be provided with the current discussion state, a list of software requirements, a summary of previous discussions (notebook), "
+        "and the latest transcription snippet. Return your decision as a valid JSON object containing the key 'updated_state' (with the new state or 'same' if no change) "
+        "and a boolean 'generate_code' flag. Also include brief feedback summarizing your reasoning."
+    )
+    user_prompt = (
+        f"Current state: '{current_state}'\n"
+        f"Requirements: '{requirements}'\n"
+        f"Notebook summary: '{notebook}'\n"
+        f"Latest transcription: '{transcription}'"
     )
     messages = [
-        {"role": "user", "content": prompt},
-        {"role": "user", "content": f"Latest transcription: '{transcription}'.\n\n"}
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
     ]
     try:
         response = llm_client.beta.chat.completions.parse(

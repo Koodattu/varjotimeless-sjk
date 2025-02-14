@@ -212,10 +212,10 @@ def trigger_code_generation(requirements):
     Call the external code generation service. This call is expected to have a very long timeout.
     """
     payload = {
-        "requirements": requirements,
+        "prompt": requirements,
     }
     try:
-        full_url = urljoin(CODE_GENERATION_SERVICE_URL, "generate")
+        full_url = urljoin(CODE_GENERATION_SERVICE_URL, "prompt")
         response = requests.post(full_url, json=payload, timeout=36000)
         if response.status_code == 200:
             print("Code generation triggered successfully.")

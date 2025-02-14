@@ -150,19 +150,22 @@ def receive_transcription(meeting_id):
     print(f"Received transcription for meeting {meeting_id}: {transcription}")
 
     if len(meeting["pending_transcriptions"]) >= REQUIREMENT_UPDATE_INTERVAL:
-        current_requirements = meeting["requirements"]
-        new_transcriptions = meeting["pending_transcriptions"]
-        updated_requirements = update_requirements_list(current_requirements, new_transcriptions)
-        meeting["requirements"] = updated_requirements
-        # Clear the pending transcriptions after updating the requirements
-        meeting["pending_transcriptions"] = []
+        update_requirements(meeting_id)
         return jsonify({
             "status": "OK",
-            "message": "Requirements updated.",
-            "requirements": updated_requirements
+            "message": "Requirements updated."
         }), 200
 
     return jsonify({"status": "OK", "message": "Transcription received."}), 200
+
+def update_requirements(meeting_id):
+    meeting = meetings[meeting_id]
+    current_requirements = meeting["requirements"]
+    new_transcriptions = meeting["pending_transcriptions"]
+    updated_requirements = update_requirements_list(current_requirements, new_transcriptions)
+    meeting["requirements"] = updated_requirements
+    meeting["pending_transcriptions"] = []
+
 
 @api.route("/meeting/<meeting_id>/requirements", methods=["GET"])
 def get_requirements(meeting_id):
@@ -172,6 +175,7 @@ def get_requirements(meeting_id):
     if meeting_id not in meetings:
         return jsonify({"status": "Error", "message": "Meeting ID not found."}), 404
 
+    update_requirements(meeting_id)
     meeting = meetings[meeting_id]
     return jsonify({
         "status": "OK",

@@ -10,10 +10,11 @@ import { subscribeToSSE } from "./listeners/sse";
 //import { subscribeToWebSocket } from "./listeners/webSocketComponen";
 
 interface ProjectData {
-  meeting_minutes: string;
+  notebook_summary: string;
   requirements: string[];
-  state: string;
-  url: string;
+  current_state: string;
+  deployment_url: string;
+  code_generation_running: boolean;
 }
 
 export default function ProjectDataWrapper() {
@@ -32,10 +33,14 @@ export default function ProjectDataWrapper() {
     <div className={styles.wrapper}>
       <div className={styles.requirementsAndState}>
         <RequirementsComponent requirements={data.requirements} />
-        <StateComponent state={data.state} />
+        <StateComponent state={data.current_state} />
       </div>
-      <MeetingMinutesComponent meetingMinutes={data.meeting_minutes} />
-      <IframeSectionComponent url={data.url} />
+      <MeetingMinutesComponent meetingMinutes={data.notebook_summary} />
+      {data.code_generation_running ? (
+        <p>Generating code... Please wait.</p>
+      ) : (
+        <IframeSectionComponent url={data.deployment_url} />
+      )}
     </div>
   );
 }

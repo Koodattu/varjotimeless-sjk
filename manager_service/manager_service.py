@@ -87,8 +87,9 @@ def poll_immediate_action(transcription):
     The prompt asks for a True/False answer.
     """
     system_prompt = (
-        "You are a meeting assistant for a software development meeting focused on creating new software. "
-        "Analyze the provided transcription snippet and determine if the content indicates that an immediate action is required. "
+        "You are a meeting assistant for a software development meeting focused on creating new software."
+        "Analyze the provided transcription snippet and determine if the content indicates that an immediate action is required."
+        "Possible reasons to take action include updating meeting minutes, updating current state of discussion or generating code."
         "Return your answer as a valid JSON with a single field 'take_action' set to true or false. Do not include any extra commentary."
     )
     user_prompt = f"Transcription snippet: '{transcription}'"
@@ -280,7 +281,7 @@ def receive_transcription(meeting_id):
         if not code_generation_running:
             code_generation_running = True
             result = trigger_code_generation(requirements)
-            deployment_url = result.get("deployment_url", "")
+            deployment_url = result.get("frontend_url", "")
             code_generation_running = False
             return jsonify({"status": "OK", "message": "Code generation triggered.", "result": result}), 200
         else:

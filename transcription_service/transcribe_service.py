@@ -142,14 +142,20 @@ def create_new_meeting():
         return str(meeting_id)
     except Exception as e:
         print("Error creating new meeting:", e)
-        return "0"
+        return None
 
 def listen_loop():
     frames = []
     last_speech_time = None
 
     try:
-        meeting_id = create_new_meeting()
+        meeting_id = None
+        while not meeting_id:
+            meeting_id = create_new_meeting()
+            if not meeting_id:
+                print("Retrying to create a new meeting...")
+                time.sleep(5)
+
         print("New meeting ID:", meeting_id)
         print("Listening on device index", AUDIO_DEVICE_INDEX)
         while True:

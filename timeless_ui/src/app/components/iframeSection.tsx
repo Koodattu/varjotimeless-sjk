@@ -5,7 +5,6 @@ interface Props {
 }
 
 export default function IframeSectionComponent({ url }: Props) {
-  console.log("url", url);
   if (!url) return null; // If url is undefined, return null
 
   return (

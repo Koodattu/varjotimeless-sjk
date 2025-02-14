@@ -9,7 +9,7 @@ interface ProjectData {
 }
 
 export function subscribeToWebSocket(setData: (data: ProjectData) => void) {
-  const socket = io("http://localhost:3001", { path: "/socket/" });
+  const socket = io("http://localhost:8082", { path: "/socket/" });
 
   socket.on("backend-update", (data: ProjectData) => {
     console.log("Received WebSocket data:", data);

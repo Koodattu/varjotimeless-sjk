@@ -37,7 +37,10 @@ export default function ProjectDataWrapper() {
       </div>
       <MeetingMinutesComponent meetingMinutes={data.notebook_summary} />
       {data.code_generation_running ? (
-        <p>Generating code... Please wait.</p>
+        <div className={styles.spinnerWrapper}>
+          <div className={styles.spinner}></div>
+          <p>Generating code... Please wait.</p>
+        </div>
       ) : (
         <IframeSectionComponent url={data.deployment_url} />
       )}

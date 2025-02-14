@@ -5,6 +5,7 @@ import requests
 from openai import OpenAI
 from flask import Flask, request, jsonify, Blueprint, Response
 from flask_cors import CORS
+from flask_sse import sse
 from pydantic import BaseModel
 from urllib.parse import urljoin
 from enum import Enum
@@ -244,6 +245,7 @@ def receive_transcription(meeting_id):
     # Add transcription to our in-memory list
     transcriptions.append(transcription)
     print(f"Received transcription: {transcription}")
+    sse.publish({"transcription": transcription}, type='transcription')
 
     # Decide if we need to act immediately
     immediate_action = poll_immediate_action(transcription)
@@ -252,6 +254,7 @@ def receive_transcription(meeting_id):
     if len(transcriptions) % 5 == 0:
         notebook_summary = update_notebook_summary(notebook_summary, transcriptions)
         transcriptions = transcriptions[-5:]  # Keep only the last 5 transcriptions
+        sse.publish({"notebook_summary": notebook_summary}, type='notebook_summary')
 
     # If no immediate action, simply store the transcription and return
     if not immediate_action:
@@ -259,6 +262,7 @@ def receive_transcription(meeting_id):
 
     # Immediate action is needed: retrieve requirements from the meeting service
     requirements = get_requirements(meeting_id)
+    sse.publish({"requirements": requirements}, type='requirements')
 
     # Evaluate current state and whether to trigger code generation
     new_state, generate_code, feedback = evaluate_and_maybe_update_state(current_state, requirements, notebook_summary, transcription)
@@ -270,36 +274,37 @@ def receive_transcription(meeting_id):
     if new_state != current_state:
         current_state = new_state
         print(f"Updated discussion state to: {current_state}")
+        sse.publish({"current_state": new_state}, type='current_state')
 
     # If code generation is triggered and not already running, call the code generation endpoint
     if generate_code:
         if not code_generation_running:
             code_generation_running = True
+            sse.publish({"code_generation_running": code_generation_running}, type='code_generation_running')
             result = trigger_code_generation(requirements)
             deployment_url = result.get("deployment_url", "")
+            sse.publish({"deployment_url": deployment_url}, type='deployment_url')
             code_generation_running = False
+            sse.publish({"code_generation_running": code_generation_running}, type='code_generation_running')
             return jsonify({"status": "OK", "message": "Code generation triggered.", "result": result}), 200
         else:
             return jsonify({"status": "OK", "message": "Code generation already running."}), 200
 
     return jsonify({"status": "OK", "message": "Transcription processed."}), 200
 
-@api.route("/sse", methods=["GET"])
-def sse_stream():
-    def event_stream():
-        while True:
-            data = { 
-                "transcriptions": transcriptions, 
-                "notebook_summary": notebook_summary, 
-                "current_state": current_state.value,
-                "code_generation_running": code_generation_running,
-                "requirements": requirements,
-                "deployment_url": deployment_url,
-            }
-            yield f"data: {json.dumps(data)}\n\n"
-            time.sleep(1)
-    return Response(event_stream(), mimetype="text/event-stream")
+@api.route("/everything", methods=["GET"])
+def get_everything():
+    data = { 
+        "transcriptions": transcriptions, 
+        "notebook_summary": notebook_summary, 
+        "current_state": current_state.value,
+        "code_generation_running": code_generation_running,
+        "requirements": requirements,
+        "deployment_url": deployment_url,
+    }
+    return jsonify(data), 200
 
 if __name__ == "__main__":
     app.register_blueprint(api, url_prefix="/api/v0")
+    app.register_blueprint(sse, url_prefix="/api/v0/sse")
     app.run(host="0.0.0.0", port=SERVICE_PORT, debug=True)

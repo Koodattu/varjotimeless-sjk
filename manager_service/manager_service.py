@@ -3,7 +3,7 @@ import time
 import json
 import requests
 from openai import OpenAI
-from flask import Flask, request, jsonify, Blueprint, Response, stream_with_context
+from flask import Flask, Response, request, jsonify, Blueprint
 from flask_cors import CORS
 from pydantic import BaseModel
 from urllib.parse import urljoin
@@ -14,46 +14,8 @@ import queue
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
 api = Blueprint("api", __name__)
-
-class MessageAnnouncer:
-    def __init__(self):
-        self.listeners = []
-
-    def listen(self):
-        q = queue.Queue(maxsize=5)
-        self.listeners.append(q)
-        return q
-
-    def announce(self, msg):
-        # Iterate over a copy so we can remove stale queues.
-        for q in list(self.listeners):
-            try:
-                q.put_nowait(msg)
-            except queue.Full:
-                self.listeners.remove(q)
-
-    def format_sse(self, data, event=None):
-        msg = f"data: {json.dumps(data)}\n\n"
-        if event is not None:
-            msg = f"event: {event}\n" + msg
-        return msg
-
-    def publish(self, data, type='message'):
-        event = self.format_sse(data, event=type)
-        self.announce(event)
-
-# Global in-memory SSE announcer instance
-announcer = MessageAnnouncer()
-
-@api.route('/sse')
-def stream():
-    def event_stream():
-        q = announcer.listen()
-        while True:
-            msg = q.get()  # blocks until a new message arrives
-            yield msg
-    return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
 # -----------------------------
 # Application code below remains the same
@@ -68,7 +30,7 @@ class DiscussionState(Enum):
     DEPLOYMENT_MAINTENANCE = "Deployment and Maintenance"
 
 # Global in-memory state
-current_state = DiscussionState.CONCEPTUALIZATION.value
+current_state = DiscussionState.CONCEPTUALIZATION
 transcriptions = []             # List of received transcription messages
 requirements = ""               # List of software requirements
 notebook_summary = ""           # Summary of the discussion (the “notebook”)
@@ -289,7 +251,6 @@ def receive_transcription(meeting_id):
     transcriptions.append(transcription)
     print(f"Received transcription: {transcription}")
     # Publish transcription via SSE (using our custom announcer)
-    announcer.publish({"transcription": transcription}, type='transcription')
 
     # Decide if we need to act immediately
     immediate_action = poll_immediate_action(transcription)
@@ -298,7 +259,6 @@ def receive_transcription(meeting_id):
     if len(transcriptions) % 5 == 0:
         notebook_summary = update_notebook_summary(notebook_summary, transcriptions)
         transcriptions = transcriptions[-5:]  # Keep only the last 5 transcriptions
-        announcer.publish({"notebook_summary": notebook_summary}, type='notebook_summary')
 
     # If no immediate action, simply store the transcription and return
     if not immediate_action:
@@ -306,7 +266,6 @@ def receive_transcription(meeting_id):
 
     # Immediate action is needed: retrieve requirements from the meeting service
     requirements = get_requirements(meeting_id)
-    announcer.publish({"requirements": requirements}, type='requirements')
 
     # Evaluate current state and whether to trigger code generation
     new_state, generate_code, feedback = evaluate_and_maybe_update_state(current_state, requirements, notebook_summary, transcription)
@@ -316,36 +275,35 @@ def receive_transcription(meeting_id):
     if new_state != current_state:
         current_state = new_state
         print(f"Updated discussion state to: {current_state}")
-        announcer.publish({"current_state": new_state}, type='current_state')
 
     if generate_code:
         if not code_generation_running:
             code_generation_running = True
-            announcer.publish({"code_generation_running": code_generation_running}, type='code_generation_running')
             result = trigger_code_generation(requirements)
             deployment_url = result.get("deployment_url", "")
-            announcer.publish({"deployment_url": deployment_url}, type='deployment_url')
             code_generation_running = False
-            announcer.publish({"code_generation_running": code_generation_running}, type='code_generation_running')
             return jsonify({"status": "OK", "message": "Code generation triggered.", "result": result}), 200
         else:
             return jsonify({"status": "OK", "message": "Code generation already running."}), 200
 
     return jsonify({"status": "OK", "message": "Transcription processed."}), 200
 
-@api.route("/everything", methods=["GET"])
-def get_everything():
-    data = { 
-        "transcriptions": transcriptions, 
-        "notebook_summary": notebook_summary, 
-        "current_state": current_state,
-        "code_generation_running": code_generation_running,
-        "requirements": requirements,
-        "deployment_url": deployment_url,
-    }
-    return jsonify(data), 200
+@api.route("/sse", methods=["GET"])
+def sse_stream():
+    def event_stream():
+        while True:
+            data = { 
+                "transcriptions": transcriptions, 
+                "notebook_summary": notebook_summary, 
+                "current_state": current_state.value,
+                "code_generation_running": code_generation_running,
+                "requirements": requirements,
+                "deployment_url": deployment_url,
+            }
+            yield f"data: {json.dumps(data)}\n\n"
+            time.sleep(1)
+    return Response(event_stream(), mimetype="text/event-stream")
 
 if __name__ == "__main__":
     app.register_blueprint(api, url_prefix="/api/v0")
-    CORS(app)
     app.run(host="0.0.0.0", port=SERVICE_PORT, debug=True)

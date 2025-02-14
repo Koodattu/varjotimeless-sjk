@@ -1,7 +1,7 @@
 "use client";
 
 export function subscribeToSSE(setData: (data: any) => void) {
-  const eventSource = new EventSource("http://localhost:8082/sse");
+  const eventSource = new EventSource("http://localhost:8082/api/v0/sse");
 
   eventSource.onmessage = (event) => {
     const newData = JSON.parse(event.data);

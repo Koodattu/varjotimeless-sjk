@@ -85,7 +85,7 @@ llm_client = get_llm_client()
 class ImmediateAction(BaseModel):
     take_action: bool
 
-def poll_immediate_action(transcription: str) -> bool:
+def poll_immediate_action(current_state: DiscussionState,  transcription: str) -> bool:
     """
     Poll the LLM to decide if immediate action is needed based on the latest transcription.
     The prompt asks for a True/False answer.
@@ -99,7 +99,7 @@ def poll_immediate_action(transcription: str) -> bool:
     user_prompt = f"Transcription snippet: '{transcription}'"
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Latest transcription: {user_prompt}"},
+        {"role": "user", "content": f"Current discussion state: {current_state}\n\nLatest transcription: {user_prompt}"},
     ]
     try:
         response = llm_client.beta.chat.completions.parse(
@@ -176,15 +176,18 @@ def evaluate_and_maybe_update_state(current_state: DiscussionState, requirements
     Poll the LLM with the current state, requirements, notebook summary, and latest transcription.
     """
     system_prompt = (
-        '''
+        f'''
         You are a strategic meeting assistant for a software development meeting.
         The current discussion state can only be one of the following: Conceptualization -> Requirement Analysis -> Design (Tech & UI/UX) -> Implementation -> Testing -> Deployment and Maintenance.
         The discussion should be moving through these states in the aforementioned order.
         Based on the provided context, determine whether to update the state (choose one of these values) and whether to trigger code generation.
         If the users demand for code generation, you should trigger the code generation service.
-        Respond with a valid JSON object containing an 'updated_state' key (with one of the allowed enum values (it can be the same if no change is needed)),
-        a boolean 'generate_code' flag, along with 'feedback'.
-        Respond only with valid JSON. Do not write an introduction or summary.
+        Respond with a valid JSON object containing the following:
+        - 'updated_state': the new state (one of: {", ".join([s.value for s in DiscussionState])})
+        - 'generate_code': a boolean flag indicating whether to trigger code generation
+        - 'feedback': any additional feedback or instructions for the users
+        Do not include any extra commentary.
+        Respond only with a valid JSON object.
         '''
     )
     user_prompt = (
@@ -204,7 +207,6 @@ def evaluate_and_maybe_update_state(current_state: DiscussionState, requirements
             max_tokens=150,
             response_format=EvaluatedState
         )
-        print(response)
         result = response.choices[0].message.parsed
         print(f"State evaluation LLM response: {result}")
         return result.updated_state, result.generate_code, result.feedback
@@ -262,7 +264,7 @@ async def receive_transcription(meeting_id: str, request: Request):
     # Publish transcription via SSE (using our custom announcer)
 
     # Decide if we need to act immediately
-    immediate_action = poll_immediate_action(transcription)
+    immediate_action = poll_immediate_action(current_state, transcription)
 
     # Update notebook summary if we have more than 5 transcriptions
     if len(transcriptions) % 5 == 0:

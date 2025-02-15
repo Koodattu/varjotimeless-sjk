@@ -43,6 +43,7 @@ if TRANSCRIPTION_METHOD == "local":
     LOCAL_MODEL_SIZE = os.getenv("LOCAL_MODEL_SIZE", "large-v3-turbo")
     # Initialize the local model (using GPU if available)
     device = "cuda" if os.getenv("USE_CUDA", "False") == "True" else "cpu"
+    print(f"Initializing local model on {device}...")
     local_model = WhisperModel(LOCAL_MODEL_SIZE, device=device, compute_type="float16")
 else:
     local_model = None
@@ -55,7 +56,7 @@ FRAME_DURATION = 30  # in ms (acceptable: 10, 20, or 30 ms)
 FRAME_SIZE = int(RATE * FRAME_DURATION / 1000)  # number of samples per frame
 SILENCE_DURATION = 0.6  # seconds of silence to mark end of speech segment
 
-vad = webrtcvad.Vad(1.5)  # set aggressiveness from 0 (least) to 3 (most)
+vad = webrtcvad.Vad(1)  # set aggressiveness from 0 (least) to 3 (most)
 
 # Setup PyAudio to capture audio from the desired device (device index specified via .env)
 AUDIO_DEVICE_INDEX = int(os.getenv("AUDIO_DEVICE_INDEX", "0"))
@@ -177,7 +178,7 @@ def listen_loop():
                 if last_speech_time and (time.time() - last_speech_time) > SILENCE_DURATION and frames:
                     # Calculate segment duration in seconds
                     segment_duration = (len(frames) * FRAME_DURATION) / 1000.0
-                    if segment_duration < 1:
+                    if segment_duration < 0.5:
                         print(f"Audio segment too short ({segment_duration:.2f} s), discarding...")
                     else:
                         segment_frames = frames.copy()

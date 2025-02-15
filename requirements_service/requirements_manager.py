@@ -1,7 +1,7 @@
 import os
 import uuid
-import json
 from flask import Flask, request, jsonify, Blueprint
+from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -9,6 +9,7 @@ from openai import OpenAI
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
 api = Blueprint("api", __name__)
 
 # -----------------------------------------------------------------------------
@@ -181,16 +182,6 @@ def get_requirements(meeting_id):
         "status": "OK",
         "requirements": meeting["requirements"]
     }), 200
-
-@api.after_request
-def add_cors_headers(response):
-    """
-    Add CORS headers to every response.
-    """
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    return response
 
 # Register the blueprint with a URL prefix
 app.register_blueprint(api, url_prefix="/api/v0")

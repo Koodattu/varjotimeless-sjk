@@ -9,6 +9,7 @@ import requests
 import pyaudio
 import webrtcvad
 from flask import Flask, request, jsonify, Blueprint
+from flask_cors import CORS
 from dotenv import load_dotenv
 from urllib.parse import urljoin
 
@@ -17,6 +18,7 @@ load_dotenv()
 
 # Create the Flask app
 app = Flask(__name__)
+CORS(app)
 api = Blueprint("api", __name__)
 
 SERVICE_PORT = os.getenv("SERVICE_PORT", "8080")
@@ -44,7 +46,7 @@ CHANNELS = 1
 RATE = 16000
 FRAME_DURATION = 30  # in ms (acceptable: 10, 20, or 30 ms)
 FRAME_SIZE = int(RATE * FRAME_DURATION / 1000)  # number of samples per frame
-SILENCE_DURATION = 1.5  # seconds of silence to mark end of speech segment
+SILENCE_DURATION = 0.6  # seconds of silence to mark end of speech segment
 
 vad = webrtcvad.Vad(2)  # set aggressiveness from 0 (least) to 3 (most)
 
@@ -186,13 +188,6 @@ def receive_text():
     text = data.get("text", "")
     print("Received text via REST API:", text)
     return jsonify({"status": "success", "message": "Text received"}), 200
-
-@api.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    return response
 
 if __name__ == "__main__":
     # Start the listen loop in a separate daemon thread

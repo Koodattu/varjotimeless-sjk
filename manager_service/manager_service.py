@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from urllib.parse import urljoin
 from enum import Enum
 from dotenv import load_dotenv
-import queue
 
 load_dotenv()
 

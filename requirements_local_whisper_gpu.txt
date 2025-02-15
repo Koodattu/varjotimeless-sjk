@@ -1,0 +1,17 @@
+# Common dependencies for backend services
+flask
+requests
+openai
+python-dotenv
+flask-cors
+pyaudio
+sounddevice
+webrtcvad
+
+# Local transcription support using faster-whisper
+faster-whisper
+
+# PyTorch packages for CUDA (using the official extra index URL)
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch
+torchaudio

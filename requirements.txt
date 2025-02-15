@@ -1,0 +1,9 @@
+# Common dependencies for backend services
+flask
+requests
+openai
+python-dotenv
+flask-cors
+pyaudio
+sounddevice
+webrtcvad

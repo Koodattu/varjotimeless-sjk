@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import os
 import io
 import time
@@ -8,27 +7,35 @@ import tempfile
 import requests
 import pyaudio
 import webrtcvad
-from flask import Flask, request, jsonify, Blueprint
-from flask_cors import CORS
+import uvicorn
+from fastapi import FastAPI, Request, HTTPException, APIRouter
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from urllib.parse import urljoin
 
 # Load configuration from .env
 load_dotenv()
 
-# Create the Flask app
-app = Flask(__name__)
-CORS(app)
-api = Blueprint("api", __name__)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    listener_thread = threading.Thread(target=listen_loop, daemon=True)
+    listener_thread.start()
+    yield
+    # Shutdown
+    listener_thread.join()
 
-SERVICE_PORT = os.getenv("SERVICE_PORT", "8080")
+# Create the FastAPI app
+app = FastAPI(lifespan=lifespan)
+router = APIRouter(prefix="/api/v0")
 
-TRANSCRIPTION_METHOD = os.getenv("TRANSCRIPTION_METHOD", "local")  # "local" or "rest"
-TASK = os.getenv("TASK", "transcribe")  # "transcribe" or "translate"
+SERVICE_PORT = os.getenv("TRANSCRIPTION_SERVICE_PORT")
+TRANSCRIPTION_METHOD = os.getenv("TRANSCRIPTION_METHOD")
+TASK = os.getenv("TASK")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# Two REST endpoint URLs to send transcriptions (comma-separated in .env)
-MEETING_SERVICE_URL = os.getenv("MEETING_SERVICE_URL", "")
-MANAGER_SERVICE_URL = os.getenv("MANAGER_SERVICE_URL", "")
+MEETING_SERVICE_URL = os.getenv("MEETING_SERVICE_URL")
+MANAGER_SERVICE_URL = os.getenv("MANAGER_SERVICE_URL")
 
 # For local transcription using faster-whisper
 if TRANSCRIPTION_METHOD == "local":
@@ -48,7 +55,7 @@ FRAME_DURATION = 30  # in ms (acceptable: 10, 20, or 30 ms)
 FRAME_SIZE = int(RATE * FRAME_DURATION / 1000)  # number of samples per frame
 SILENCE_DURATION = 0.6  # seconds of silence to mark end of speech segment
 
-vad = webrtcvad.Vad(2)  # set aggressiveness from 0 (least) to 3 (most)
+vad = webrtcvad.Vad(1.5)  # set aggressiveness from 0 (least) to 3 (most)
 
 # Setup PyAudio to capture audio from the desired device (device index specified via .env)
 AUDIO_DEVICE_INDEX = int(os.getenv("AUDIO_DEVICE_INDEX", "0"))
@@ -89,8 +96,8 @@ def send_transcription(text: str, meeting_id: int = 0):
                 print(f"Error sending transcription to {endpoint}: {e}")
 
     REST_ENDPOINT_URLS = [
-        urljoin(MEETING_SERVICE_URL, f"meeting/{meeting_id}/transcription"), 
-        urljoin(MANAGER_SERVICE_URL, f"meeting/{meeting_id}/transcription")
+        MEETING_SERVICE_URL + f"/meeting/{meeting_id}/transcription", 
+        MANAGER_SERVICE_URL + f"/meeting/{meeting_id}/transcription"
     ]
     for endpoint in REST_ENDPOINT_URLS:
         if endpoint:
@@ -140,8 +147,7 @@ def process_audio_segment(frames, meeting_id):
 def create_new_meeting():
     try:
         response = requests.post(MEETING_SERVICE_URL + "/meeting")
-        meeting_id = response.json().get("meeting_id", 0)
-        return str(meeting_id)
+        return response.json().get("meeting_id", None)
     except Exception as e:
         print("Error creating new meeting:", e)
         return None
@@ -168,10 +174,14 @@ def listen_loop():
                 last_speech_time = time.time()
                 frames.append(frame)
             else:
-                # If sufficient silence is detected after speech, process the segment
                 if last_speech_time and (time.time() - last_speech_time) > SILENCE_DURATION and frames:
-                    segment_frames = frames.copy()
-                    threading.Thread(target=process_audio_segment, args=(segment_frames,meeting_id), daemon=True).start()
+                    # Calculate segment duration in seconds
+                    segment_duration = (len(frames) * FRAME_DURATION) / 1000.0
+                    if segment_duration < 1:
+                        print(f"Audio segment too short ({segment_duration:.2f} s), discarding...")
+                    else:
+                        segment_frames = frames.copy()
+                        threading.Thread(target=process_audio_segment, args=(segment_frames, meeting_id), daemon=True).start()
                     frames = []
                     last_speech_time = None
     except KeyboardInterrupt:
@@ -182,18 +192,25 @@ def listen_loop():
         audio_interface.terminate()
 
 # REST endpoint to receive text from other services
-@api.route('/receive-text', methods=['POST'])
-def receive_text():
-    data = request.get_json(force=True)
+@router.post("/receive-text")
+async def receive_text(request: Request):
+    try:
+        data = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from e
     text = data.get("text", "")
     print("Received text via REST API:", text)
-    return jsonify({"status": "success", "message": "Text received"}), 200
+    return JSONResponse(content={"status": "success", "message": "Text received"})
+
+app.include_router(router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
-    # Start the listen loop in a separate daemon thread
-    listener_thread = threading.Thread(target=listen_loop, daemon=True)
-    listener_thread.start()
-
-    # Start the Flask app
-    app.register_blueprint(api, url_prefix="/api/v0")
-    app.run(host="0.0.0.0", port=SERVICE_PORT)
+    print(f"Starting Transcription Service on port {SERVICE_PORT}")
+    uvicorn.run("transcribe_service:app", host="0.0.0.0", port=int(SERVICE_PORT), reload=False)

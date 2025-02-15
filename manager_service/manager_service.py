@@ -1,20 +1,21 @@
 import os
-import time
 import json
 import requests
 from openai import OpenAI
-from flask import Flask, Response, request, jsonify, Blueprint
-from flask_cors import CORS
+from fastapi import FastAPI, Request, HTTPException, APIRouter
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from urllib.parse import urljoin
 from enum import Enum
 from dotenv import load_dotenv
+import asyncio
+
+import uvicorn
 
 load_dotenv()
 
-app = Flask(__name__)
-CORS(app)
-api = Blueprint("api", __name__)
+app = FastAPI()
+router = APIRouter(prefix="/api/v0")
 
 # -----------------------------
 # Application code below remains the same
@@ -37,20 +38,24 @@ code_generation_running = False  # Flag to indicate if a code generation job is 
 deployment_url = ""             # URL where the generated code will be deployed
 
 # Environment configuration for LLM providers and service URLs
-SERVICE_PORT = os.environ.get("SERVICE_PORT", 8082)
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")  # "openrouter", "openai" or "ollama"
+SERVICE_PORT = os.environ.get("MANAGER_SERVICE_PORT")
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER") 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL")
 OLLAMA_URL = os.environ.get("OLLAMA_URL")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL")
 VOICE_SERVICE_URL = os.environ.get("VOICE_SERVICE_URL")
-MEETING_SERVICE_URL = os.environ.get("MEETING_SERVICE_URL")  # Assuming this provides the list of requirements
+MEETING_SERVICE_URL = os.environ.get("MEETING_SERVICE_URL")
 CODE_GENERATION_SERVICE_URL = os.environ.get("CODE_GENERATION_SERVICE_URL")
 
-# Choose the model based on the provider, OpenAI, OpenRouter, or OLLAMA
-CHOSEN_MODEL = OPENAI_MODEL if LLM_PROVIDER.lower() == "openai" else OPENROUTER_MODEL if LLM_PROVIDER.lower() == "openrouter" else OLLAMA_MODEL
+# Choose the model based on the provider
+CHOSEN_MODEL = (
+    OPENAI_MODEL if LLM_PROVIDER == "openai"
+    else OPENROUTER_MODEL if LLM_PROVIDER == "openrouter"
+    else OLLAMA_MODEL
+)
 
 # Setup LLM client based on provider choice.
 def get_llm_client():
@@ -80,7 +85,7 @@ llm_client = get_llm_client()
 class ImmediateAction(BaseModel):
     take_action: bool
 
-def poll_immediate_action(transcription):
+def poll_immediate_action(transcription: str) -> bool:
     """
     Poll the LLM to decide if immediate action is needed based on the latest transcription.
     The prompt asks for a True/False answer.
@@ -94,7 +99,7 @@ def poll_immediate_action(transcription):
     user_prompt = f"Transcription snippet: '{transcription}'"
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
+        {"role": "user", "content": f"Latest transcription: {user_prompt}"},
     ]
     try:
         response = llm_client.beta.chat.completions.parse(
@@ -110,7 +115,7 @@ def poll_immediate_action(transcription):
         print("Error in poll_immediate_action:", e)
         return False
 
-def update_notebook_summary(current_notebook, transcriptions):
+def update_notebook_summary(current_notebook: str, transcriptions: list) -> str:
     """
     Poll the LLM to update the notebook summary with the latest transcription.
     The prompt includes the current summary and the new transcription.
@@ -132,7 +137,7 @@ def update_notebook_summary(current_notebook, transcriptions):
         response = llm_client.chat.completions.create(
             model=CHOSEN_MODEL,
             messages=messages,
-            max_tokens=100,
+            max_tokens=1000,
         )
         new_summary = response.choices[0].message.content.strip()
         print(f"Updated notebook summary: {new_summary}")
@@ -141,13 +146,13 @@ def update_notebook_summary(current_notebook, transcriptions):
         print("Error in update_notebook_summary:", e)
         return current_notebook
 
-def get_requirements(meeting_id):
+def get_requirements(meeting_id: str) -> str:
     """
     Retrieve the list of requirements from the Meeting Service (or other service).
     Expects a JSON response with a "requirements" field.
     """
     try:
-        full_url = urljoin(MEETING_SERVICE_URL, f"meeting/{meeting_id}/requirements")
+        full_url = MEETING_SERVICE_URL + f"/meeting/{meeting_id}/requirements"
         response = requests.get(full_url)
         if response.status_code == 200:
             data = response.json()
@@ -166,7 +171,7 @@ class EvaluatedState(BaseModel):
     generate_code: bool
     feedback: str
 
-def evaluate_and_maybe_update_state(current_state, requirements, notebook, transcription):
+def evaluate_and_maybe_update_state(current_state: DiscussionState, requirements: str, notebook: str, transcription: str):
     """
     Poll the LLM with the current state, requirements, notebook summary, and latest transcription.
     """
@@ -177,7 +182,9 @@ def evaluate_and_maybe_update_state(current_state, requirements, notebook, trans
         The discussion should be moving through these states in the aforementioned order.
         Based on the provided context, determine whether to update the state (choose one of these values) and whether to trigger code generation.
         If the users demand for code generation, you should trigger the code generation service.
-        Respond with a valid JSON object containing an 'updated_state' key (with one of the allowed enum values (it can be the same if no change is needed)) and a boolean 'generate_code' flag, along with brief feedback.
+        Respond with a valid JSON object containing an 'updated_state' key (with one of the allowed enum values (it can be the same if no change is needed)),
+        a boolean 'generate_code' flag, along with 'feedback'.
+        Respond only with valid JSON. Do not write an introduction or summary.
         '''
     )
     user_prompt = (
@@ -197,17 +204,15 @@ def evaluate_and_maybe_update_state(current_state, requirements, notebook, trans
             max_tokens=150,
             response_format=EvaluatedState
         )
+        print(response)
         result = response.choices[0].message.parsed
         print(f"State evaluation LLM response: {result}")
-        updated_state = result.updated_state
-        generate_code = result.generate_code
-        feedback = result.feedback
-        return updated_state, generate_code, feedback
+        return result.updated_state, result.generate_code, result.feedback
     except Exception as e:
         print("Error in evaluate_and_maybe_update_state:", e)
         return current_state, False, ""
 
-def trigger_code_generation(requirements):
+def trigger_code_generation(requirements: str):
     """
     Call the external code generation service. This call is expected to have a very long timeout.
     """
@@ -215,7 +220,7 @@ def trigger_code_generation(requirements):
         "prompt": requirements,
     }
     try:
-        full_url = urljoin(CODE_GENERATION_SERVICE_URL, "prompt")
+        full_url = CODE_GENERATION_SERVICE_URL + "/prompt"
         response = requests.post(full_url, json=payload, timeout=36000)
         if response.status_code == 200:
             print("Code generation triggered successfully.")
@@ -231,8 +236,8 @@ def trigger_code_generation(requirements):
 # Flask Endpoints
 # -------------------------------------------------------------------
 
-@api.route("/meeting/<meeting_id>/transcription", methods=["POST"])
-def receive_transcription(meeting_id):
+@router.post("/meeting/{meeting_id}/transcription")
+async def receive_transcription(meeting_id: str, request: Request):
     """
     Endpoint to receive a new transcription.
     1. Stores the transcription.
@@ -242,10 +247,14 @@ def receive_transcription(meeting_id):
     """
     global transcriptions, notebook_summary, current_state, code_generation_running, requirements, deployment_url
 
-    data = request.get_json()
+    try:
+        data = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from e
+
     transcription = data.get("transcription", "").strip()
     if not transcription:
-        return jsonify({"status": "Error", "message": "No transcription provided."}), 400
+        raise HTTPException(status_code=400, detail="No transcription provided.")
 
     # Add transcription to our in-memory list
     transcriptions.append(transcription)
@@ -262,13 +271,14 @@ def receive_transcription(meeting_id):
 
     # If no immediate action, simply store the transcription and return
     if not immediate_action:
-        return jsonify({"status": "OK", "message": "Transcription stored, no further action."}), 200
+        return JSONResponse(content={"status": "OK", "message": "Transcription stored, no further action."})
+
 
     # Immediate action is needed: retrieve requirements from the meeting service
     requirements = get_requirements(meeting_id)
-
-    # Evaluate current state and whether to trigger code generation
-    new_state, generate_code, feedback = evaluate_and_maybe_update_state(current_state, requirements, notebook_summary, transcription)
+    new_state, generate_code, feedback = evaluate_and_maybe_update_state(
+        current_state, requirements, notebook_summary, transcription
+    )
 
     print(f"LLM feedback: {feedback}")
 
@@ -282,28 +292,47 @@ def receive_transcription(meeting_id):
             result = trigger_code_generation(requirements)
             deployment_url = result.get("frontend_url", "")
             code_generation_running = False
-            return jsonify({"status": "OK", "message": "Code generation triggered.", "result": result}), 200
+            return JSONResponse(content={
+                "status": "OK",
+                "message": "Code generation triggered.",
+                "result": result
+            })
         else:
-            return jsonify({"status": "OK", "message": "Code generation already running."}), 200
+            return JSONResponse(content={
+                "status": "OK",
+                "message": "Code generation already running."
+            })
 
-    return jsonify({"status": "OK", "message": "Transcription processed."}), 200
+    return JSONResponse(content={"status": "OK", "message": "Transcription processed."})
 
-@api.route("/sse", methods=["GET"])
-def sse_stream():
-    def event_stream():
+@router.get("/sse", status_code=200)
+async def sse_stream():
+    """
+    SSE stream endpoint to continuously send the current state.
+    """
+    async def event_stream():
         while True:
-            data = { 
-                "transcriptions": transcriptions, 
-                "notebook_summary": notebook_summary, 
+            data = {
+                "transcriptions": transcriptions,
+                "notebook_summary": notebook_summary,
                 "current_state": current_state.value,
                 "code_generation_running": code_generation_running,
                 "requirements": requirements,
                 "deployment_url": deployment_url,
             }
             yield f"data: {json.dumps(data)}\n\n"
-            time.sleep(1)
-    return Response(event_stream(), mimetype="text/event-stream")
+            await asyncio.sleep(1)
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+app.include_router(router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
-    app.register_blueprint(api, url_prefix="/api/v0")
-    app.run(host="0.0.0.0", port=SERVICE_PORT, debug=True)
+    print(f"Starting Manager Service on port {SERVICE_PORT}")
+    uvicorn.run("manager_service:app", host="0.0.0.0", port=int(SERVICE_PORT), reload=False)

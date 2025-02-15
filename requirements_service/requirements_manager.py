@@ -1,35 +1,34 @@
 import os
 import uuid
-from flask import Flask, request, jsonify, Blueprint
-from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
+from fastapi import FastAPI, HTTPException, Body, APIRouter
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
 
 # Load environment variables from .env file
 load_dotenv()
 
-app = Flask(__name__)
-CORS(app)
-api = Blueprint("api", __name__)
+app = FastAPI()
+router = APIRouter(prefix="/api/v0")
 
 # -----------------------------------------------------------------------------
 # Environment & LLM Configuration
 # -----------------------------------------------------------------------------
-SERVICE_PORT = int(os.environ.get("SERVICE_PORT", 8081))
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai").lower()  # "openrouter", "openai" or "ollama"
+SERVICE_PORT = os.environ.get("REQUIREMENTS_SERVICE_PORT")
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL")
 OLLAMA_URL = os.environ.get("OLLAMA_URL")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL")
 
 # Choose the model based on the provider
 CHOSEN_MODEL = (
-    OPENAI_MODEL
-    if LLM_PROVIDER == "openai"
-    else OPENROUTER_MODEL
-    if LLM_PROVIDER == "openrouter"
+    OPENAI_MODEL if LLM_PROVIDER == "openai"
+    else OPENROUTER_MODEL if LLM_PROVIDER == "openrouter"
     else OLLAMA_MODEL
 )
 
@@ -71,12 +70,43 @@ llm_client = get_llm_client()
 # }
 meetings = {}
 
-# How many transcriptions trigger a requirements update?
-REQUIREMENT_UPDATE_INTERVAL = int(os.environ.get("REQUIREMENT_UPDATE_INTERVAL", 5))
 
 # -----------------------------------------------------------------------------
-# LLM Helper Function: Update Requirements List
+# LLM Functions: Update Requirements List
 # -----------------------------------------------------------------------------
+class UpdateRequirements(BaseModel):
+    update_requirements: bool
+
+def should_update_requirements(transcription):
+    """
+    Poll the LLM to decide if requirements should be updated based on the latest transcription.
+    The prompt asks for a True/False answer.
+    """
+    system_prompt = (
+        "You are a requirements management assistant for a software project."
+        "Analyze the provided transcription snippet and determine if the content is relevant for requirements gathering."
+        "Return your answer as a valid JSON with a single field 'update_requirements' set to true or false."
+        "Do not include any extra commentary."
+    )
+    user_prompt = f"Latest transcription: {transcription}"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    try:
+        response = llm_client.beta.chat.completions.parse(
+            model=CHOSEN_MODEL,
+            messages=messages,
+            max_tokens=10,
+            response_format=UpdateRequirements
+        )
+        result = response.choices[0].message.parsed.update_requirements
+        print(f"Should update requirements LLM response: {result}")
+        return result
+    except Exception as e:
+        print("Error in should_update_requirements:", e)
+        return False
+
 def update_requirements_list(current_requirements, transcriptions):
     """
     Given the current requirements and a list of new meeting transcriptions,
@@ -84,12 +114,12 @@ def update_requirements_list(current_requirements, transcriptions):
     The prompt instructs the LLM to return a bullet list of requirements.
     """
     system_prompt = (
-        "You are a requirements management assistant for a software project. "
-        "The project requirements evolve as the meeting discussion progresses. "
-        "Given the current list of requirements and the new meeting transcriptions, "
-        "update the requirements list. If any requirement has changed, be sure to modify it. "
-        "Return the updated requirements as a bullet list with each requirement on a new line. "
-        "Do not include any additional commentary."
+        "You are a requirements management assistant for a software project."
+        "The project requirements evolve as the meeting discussion progresses."
+        "Given the current list of requirements and the new meeting transcriptions,"
+        "update the requirements list. If any requirement has changed, be sure to modify it."
+        "Return the updated requirements as a bullet list with each requirement on a new line."
+        "Do not include any additional commentary. Keep it concise and clear."
     )
     user_prompt = (
         f"Current requirements:\n{current_requirements}\n\n"
@@ -103,7 +133,7 @@ def update_requirements_list(current_requirements, transcriptions):
         response = llm_client.chat.completions.create(
             model=CHOSEN_MODEL,
             messages=messages,
-            max_tokens=200,
+            max_tokens=2000,
         )
         updated_requirements = response.choices[0].message.content.strip()
         print(f"Updated requirements:\n{updated_requirements}")
@@ -113,11 +143,23 @@ def update_requirements_list(current_requirements, transcriptions):
         # If there is an error, return the current requirements unchanged.
         return current_requirements
 
+def decide_update_requirements(meeting_id, latest_transcription):
+    llm_decision = should_update_requirements(latest_transcription)
+    many_pending = len(meetings[meeting_id]["pending_transcriptions"]) >= 5
+    return llm_decision or many_pending
+
+def update_requirements(meeting_id):
+    meeting = meetings[meeting_id]
+    current_requirements = meeting["requirements"]
+    new_transcriptions = meeting["pending_transcriptions"]
+    updated_requirements = update_requirements_list(current_requirements, new_transcriptions)
+    meeting["requirements"] = updated_requirements
+    meeting["pending_transcriptions"] = []
+
 # -----------------------------------------------------------------------------
 # Flask Endpoints
 # -----------------------------------------------------------------------------
-
-@api.route("/meeting", methods=["POST"])
+@router.post("/meeting", status_code=201)
 def create_meeting():
     """
     Creates a new meeting and returns a unique meeting ID.
@@ -128,63 +170,47 @@ def create_meeting():
         "pending_transcriptions": [],
     }
     print(f"Created new meeting with ID: {meeting_id}")
-    return jsonify({"meeting_id": meeting_id}), 201
+    return {"meeting_id": meeting_id}
 
-@api.route("/meeting/<meeting_id>/transcription", methods=["POST"])
-def receive_transcription(meeting_id):
+@router.post("/meeting/{meeting_id}/transcription")
+def receive_transcription(meeting_id: str, data: dict = Body(...)):
     """
     Receives a new transcription for a given meeting.
-    The transcription is added to the meeting's pending transcriptions list.
-    Once the count reaches the update threshold, the LLM is called to update
-    the requirements list, and the pending transcriptions are cleared.
+    If the number of pending transcriptions reaches the update interval,
+    the LLM is called to update the requirements list.
     """
     if meeting_id not in meetings:
-        return jsonify({"status": "Error", "message": "Meeting ID not found."}), 404
-
-    data = request.get_json()
+        raise HTTPException(status_code=404, detail="Meeting ID not found.")
     transcription = data.get("transcription", "").strip()
     if not transcription:
-        return jsonify({"status": "Error", "message": "No transcription provided."}), 400
-
+        raise HTTPException(status_code=400, detail="No transcription provided.")
     meeting = meetings[meeting_id]
     meeting["pending_transcriptions"].append(transcription)
     print(f"Received transcription for meeting {meeting_id}: {transcription}")
-
-    if len(meeting["pending_transcriptions"]) >= REQUIREMENT_UPDATE_INTERVAL:
+    if decide_update_requirements(meeting_id, transcription):
         update_requirements(meeting_id)
-        return jsonify({
-            "status": "OK",
-            "message": "Requirements updated."
-        }), 200
+    return {"status": "OK", "message": "Transcription received."}
 
-    return jsonify({"status": "OK", "message": "Transcription received."}), 200
-
-def update_requirements(meeting_id):
-    meeting = meetings[meeting_id]
-    current_requirements = meeting["requirements"]
-    new_transcriptions = meeting["pending_transcriptions"]
-    updated_requirements = update_requirements_list(current_requirements, new_transcriptions)
-    meeting["requirements"] = updated_requirements
-    meeting["pending_transcriptions"] = []
-
-
-@api.route("/meeting/<meeting_id>/requirements", methods=["GET"])
-def get_requirements(meeting_id):
+@router.get("/meeting/{meeting_id}/requirements")
+def get_requirements(meeting_id: str):
     """
     Returns the current requirements list for the specified meeting.
     """
     if meeting_id not in meetings:
-        return jsonify({"status": "Error", "message": "Meeting ID not found."}), 404
-
+        raise HTTPException(status_code=404, detail="Meeting ID not found.")
     update_requirements(meeting_id)
     meeting = meetings[meeting_id]
-    return jsonify({
-        "status": "OK",
-        "requirements": meeting["requirements"]
-    }), 200
+    return {"status": "OK", "requirements": meeting["requirements"]}
 
-# Register the blueprint with a URL prefix
-app.register_blueprint(api, url_prefix="/api/v0")
+app.include_router(router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=SERVICE_PORT, debug=True)
+    print(f"Starting Requirements Manager service on port {SERVICE_PORT}")
+    uvicorn.run("requirements_manager:app", host="0.0.0.0", port=int(SERVICE_PORT), reload=False)

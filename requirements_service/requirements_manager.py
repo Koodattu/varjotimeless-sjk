@@ -213,4 +213,4 @@ app.add_middleware(
 
 if __name__ == "__main__":
     print(f"Starting Requirements Manager service on port {SERVICE_PORT}")
-    uvicorn.run("requirements_manager:app", host="0.0.0.0", port=int(SERVICE_PORT), reload=False)
+    uvicorn.run("requirements_manager:app", host="0.0.0.0", port=int(SERVICE_PORT), workers=1, reload=False)

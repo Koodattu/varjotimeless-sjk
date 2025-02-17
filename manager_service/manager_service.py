@@ -337,4 +337,4 @@ app.add_middleware(
 
 if __name__ == "__main__":
     print(f"Starting Manager Service on port {SERVICE_PORT}")
-    uvicorn.run("manager_service:app", host="0.0.0.0", port=int(SERVICE_PORT), reload=False)
+    uvicorn.run("manager_service:app", host="0.0.0.0", port=int(SERVICE_PORT), workers=1, reload=False)

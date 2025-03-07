@@ -152,9 +152,10 @@ def update_requirements(meeting_id):
     meeting = meetings[meeting_id]
     current_requirements = meeting["requirements"]
     new_transcriptions = meeting["pending_transcriptions"]
-    updated_requirements = update_requirements_list(current_requirements, new_transcriptions)
-    meeting["requirements"] = updated_requirements
-    meeting["pending_transcriptions"] = []
+    if new_transcriptions:
+        updated_requirements = update_requirements_list(current_requirements, new_transcriptions)
+        meeting["requirements"] = updated_requirements
+        meeting["pending_transcriptions"] = []
 
 # -----------------------------------------------------------------------------
 # Flask Endpoints

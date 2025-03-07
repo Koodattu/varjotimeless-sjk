@@ -146,6 +146,36 @@ def update_notebook_summary(current_notebook: str, transcriptions: list) -> str:
         print("Error in update_notebook_summary:", e)
         return current_notebook
 
+def format_requirements(requirements: str) -> str:
+    """
+    Format the requirements list for code generation.
+    """
+    system_prompt = (
+        "You are an assistant that helps in generating software development prompts. "
+        "Your task is to take a list of raw requirements and transform them into a single cohesive paragraph. "
+        "Ensure that the paragraph is clear, concise, and captures all the key points from the list. "
+        "The paragraph should be suitable for use as a prompt for generating code or further discussion."
+    )
+    user_prompt = (
+        f"Raw requirements list: {requirements}"
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+    try:
+        response = llm_client.chat.completions.create(
+            model=CHOSEN_MODEL,
+            messages=messages,
+            max_tokens=1000,
+        )
+        new_summary = response.choices[0].message.content.strip()
+        print(f"Formatted requirements: {new_summary}")
+        return new_summary
+    except Exception as e:
+        print("Error in format_requirements:", e)
+        return requirements
+
 def get_requirements(meeting_id: str) -> str:
     """
     Retrieve the list of requirements from the Meeting Service (or other service).
@@ -218,10 +248,11 @@ def trigger_code_generation(requirements: str):
     """
     Call the external code generation service. This call is expected to have a very long timeout.
     """
-    payload = {
-        "prompt": requirements,
-    }
     try:
+        requirements_formatted = format_requirements(requirements)
+        payload = {
+            "prompt": requirements_formatted,
+        }
         full_url = CODE_GENERATION_SERVICE_URL + "/prompt"
         response = requests.post(full_url, json=payload, timeout=36000)
         if response.status_code == 200:

@@ -59,8 +59,12 @@ SILENCE_DURATION = 0.6  # seconds of silence to mark end of speech segment
 vad = webrtcvad.Vad(1)  # set aggressiveness from 0 (least) to 3 (most)
 
 # Setup PyAudio to capture audio from the desired device (device index specified via .env)
-AUDIO_DEVICE_INDEX = int(os.getenv("AUDIO_DEVICE_INDEX", "0"))
 audio_interface = pyaudio.PyAudio()
+AUDIO_DEVICE_INDEX = os.getenv("AUDIO_DEVICE_INDEX", "default")
+if AUDIO_DEVICE_INDEX != "default":
+    AUDIO_DEVICE_INDEX = int(AUDIO_DEVICE_INDEX)
+else:
+    AUDIO_DEVICE_INDEX = audio_interface.get_default_input_device_info()["index"]
 stream = audio_interface.open(format=FORMAT,
                               channels=CHANNELS,
                               rate=RATE,
@@ -97,7 +101,7 @@ def send_transcription(text: str, meeting_id: int = 0):
                 print(f"Error sending transcription to {endpoint}: {e}")
 
     REST_ENDPOINT_URLS = [
-        MEETING_SERVICE_URL + f"/meeting/{meeting_id}/transcription", 
+        MEETING_SERVICE_URL + f"/meeting/{meeting_id}/transcription",
         MANAGER_SERVICE_URL + f"/meeting/{meeting_id}/transcription"
     ]
     for endpoint in REST_ENDPOINT_URLS:
